@@ -1,0 +1,96 @@
+{
+	"AWSTemplateFormatVersion" : "2010-09-09",
+	"Description" : "",
+  	"Parameters" : {
+  		"BuildNumber" : {
+    		"Type" : "String"
+    	}
+  	},
+  	"Resources" : {
+  		"WebLoadBalancer" : {
+      		"Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+      		"Properties" : {
+        		"AvailabilityZones" : {"Fn::GetAZs" : ""},
+        		"Listeners" : [{
+          			"LoadBalancerPort" : "80",
+          			"InstancePort" : "80",
+          			"Protocol" : "HTTP"
+        		}]
+      		}
+    	},
+    	"WebServerScalingGroup" : {
+	    	"Type" : "AWS::AutoScaling::AutoScalingGroup",
+	    	"Properties" : {
+	      		"AvailabilityZones" : { "Fn::GetAZs" : "" },
+	      		"LaunchConfigurationName" : { "Ref" : "WebServerLaunchConfiguration" },
+	      		"MinSize" : "2",
+	      		"MaxSize" : "4",
+	      		"LoadBalancerNames" : [{"Ref" : "WebLoadBalancer"}]
+	    	}
+	  	},
+		"WebServerLaunchConfiguration" : {
+    		"Type" : "AWS::AutoScaling::LaunchConfiguration",
+    		"Properties" : {
+      			"ImageId" : "ami-9dd8afa7",
+      			"KeyName" : "brendan-keypair",
+      			"InstanceType" : "m1.small",
+      			"SecurityGroups" : [{ "Ref" : "InstanceSecurityGroup" }],
+      			"IamInstanceProfile" : "arn:aws:iam::xxx:instance-profile/xxx",
+      			"UserData" : { 
+      				"Fn::Base64" : { 
+      					"Fn::Join" : ["", [
+	        				"<script>\n",
+          					"cfn-init.exe -v -s ", {"Ref" : "AWS::StackId"}, " -r WebServerLaunchConfiguration --region ", {"Ref" : "AWS::Region"}, "\n",
+        					"</script>\n",
+        					"<powershell>\n",
+                    "Start-Transcript -path C:\\install-log.txt -append \n",
+                    "\"Removing Default Website...\" | Write-Host \n",
+                    "remove-website -name \"Default Web Site\" \n",
+                    "while((Get-Website -Name \"Default Web Site\") -ne $null) { \"Waiting for Default Website to be removed\" | Write-Host; Start-Sleep -Seconds 5 } \n",
+                    "\"Creating Website...\" | Write-Host \n",
+          					"new-website -name Test -port 80 -physicalpath c:\\inetpub\\Test -ApplicationPool \".NET v4.5\" -force \n",
+                    "\"Starting Website...\" | Write-Host \n",
+          					"start-website -name Test \n",
+        					"</powershell>"
+      					]]
+      				}
+      			}
+      		},
+			"Metadata" : {
+				"BuildNumber" : { "Ref" : "BuildNumber" },
+				"AWS::CloudFormation::Authentication" : {
+  					"default" : {
+    					"type" : "s3",
+    					"buckets" : ["dotnet-cf-deployment-packages"],
+    					"roleName" : "DeployerRole"
+   					}
+				},
+				"AWS::CloudFormation::Init" : {
+  					"config" : {
+        				"sources" : {
+          					"c:\\inetpub\\test" : {"Fn::Join" : ["",[
+                      "https://dotnet-cf-deployment-packages.s3.amazonaws.com/dist-", 
+                      {"Ref":"BuildNumber"},
+                      ".zip" ]]}
+	    				}
+  					}
+				} 
+			}  			
+  		},
+	  	"InstanceSecurityGroup" : {
+      		"Type" : "AWS::EC2::SecurityGroup",
+      		"Properties" : {
+        		"GroupDescription" : "Enable HTTP from the load balancer only",
+        		"SecurityGroupIngress" : [{
+          			"IpProtocol" : "tcp",
+          			"FromPort" : "80",
+          			"ToPort" : "80",
+          			"SourceSecurityGroupOwnerId" : {"Fn::GetAtt" : ["WebLoadBalancer", "SourceSecurityGroup.OwnerAlias"]},
+          			"SourceSecurityGroupName" : {"Fn::GetAtt" : ["WebLoadBalancer", "SourceSecurityGroup.GroupName"]}
+        		}]
+      		}
+    	}
+    },
+  	"Outputs" : {
+  	}
+}

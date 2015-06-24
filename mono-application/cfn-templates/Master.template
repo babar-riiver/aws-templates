@@ -1,5 +1,3 @@
-// https://s3-us-west-2.amazonaws.com/cloudformation-templates-us-west-2/WordPress_Single_Instance.template
-// http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/deploying.applications.html
 {
 	"AWSTemplateFormatVersion" : "2010-09-09",
 	"Parameters" : {
@@ -9,9 +7,12 @@
 		"IndexerVersion" : {
 			"Type" : "String"
 		},
-		"IndexerSourceBucketBaseUrl" : {
+		"IndexerSourceBucket" : {
 			"Type" : "String"
-		}
+		},
+		"IndexerSourceBucketKeyPrefix" : {
+			"Type" : "String"
+		},
 		"IndexerKeyName" : {
 			"Description" : "Name of an existing EC2 KeyPair to enable SSH access to the indexer instance",
 		    "Type": "AWS::EC2::KeyPair::KeyName",
@@ -81,11 +82,68 @@
 			"sa-east-1"        : {"PV64" : "ami-29aa1234", "HVM64" : "ami-27aa123a", "HVMG2" : "NOT_SUPPORTED"},
 			"cn-north-1"       : {"PV64" : "ami-503aa869", "HVM64" : "ami-543aa86d", "HVMG2" : "NOT_SUPPORTED"}		
 		}
-	}
+	},
 	"Resources" : {
 		"IndexerSecurityGroup" : {
-		
+			"Type" : "AWS::EC2::SecurityGroup",			
+			"Properties" : {
+				"GroupDescription" : "Security group for indexer service",
+				"SecurityGroupIngress" : [
+					{"IpProtocol" : "tcp", "FromPort" : "3579", "ToPort" : "3579", "CidrIp" : "0.0.0.0/0" },
+					{"IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : "0.0.0.0/0" }
+				]
+			}	
 		},
+		"DeployerRole" : {
+			"Type" : "AWS::IAM::Role",
+			"Properties" : {
+				"Path" : "/",
+				"AssumeRolePolicyDocument" : {
+					"Version" : "2012-10-17",
+					"Statement" : [{
+						"Effect" : "Allow",
+						"Action" : [ "sts:AssumeRole" ],
+						"Principal" : {
+							"Service" : [ "ec2.amazonaws.com" ]
+						}
+					}]
+				},
+				"Policies" : [{
+					"PolicyName" : "root",
+					"PolicyDocument" : {
+						"Version" : "2012-10-17",
+						"Statement" : [{
+							"Action" : ["s3:*"],
+							"Effect": "Allow",
+							"Resource" : [{ 
+								"Fn::Join" : ["",[
+									"arn:aws:s3:::", 
+									{ "Ref" : "IndexerSourceBucket" }, 
+									{ "Ref" : "IndexerSourceBucketKeyPrefix" }
+								]]
+							},
+							{
+								"Fn::Join" : ["",[
+									"arn:aws:s3:::", 
+									{ "Ref" : "IndexerSourceBucket" }, 
+									{ "Ref" : "IndexerSourceBucketKeyPrefix" },
+									"/*"
+								]]
+							}]
+						}]
+					}
+				}]
+			}
+		},
+		"DeployerInstanceProfile" : {
+			"Type": "AWS::IAM::InstanceProfile",
+			"Properties" : {
+				"Path" : "/",
+				"Roles" : [{
+					"Ref" : "DeployerRole"
+				}]
+			}
+		},		
 		"IndexerInstance" : {
 			"Type" : "AWS::EC2::Instance",
 			"Properties" : {
@@ -99,7 +157,7 @@
 							"Fn::FindInMap" : [ 
 								"AWSInstanceType2Arch", 
 								{ 
-									"Ref" : "InstanceType" 
+									"Ref" : "IndexerInstanceType" 
 								}, 
 								"Arch" 
 							]
@@ -107,41 +165,43 @@
 					]
 				},
 				"InstanceType" : { 
-					"Ref" : "InstanceType" 
+					"Ref" : "IndexerInstanceType" 
 				},
 				"SecurityGroups" : [{
 					"Ref" : "IndexerSecurityGroup"
 				}],
 				"KeyName" : { 
-					"Ref" : "KeyName" 
+					"Ref" : "IndexerKeyName" 
 				},
 				"UserData" : {
 					"Fn::Base64" : {
-						"Fn::Join" ["", [
+						"Fn::Join" : ["", [
 							"#!/bin/bash -xe\n",
 							"yum update -y aws-cfn-bootstrap\n",
-						
 							"/opt/aws/bin/cfn-init -v ",
-							"	--stack ", { "Ref" : "AWS::StackName" },
-							"	--resource IndexerInstance ",
-							"	--configsets install ",
-							"	--region ", { "Ref" : "AWS::Region" }, "\n",
-
-							"/opt/aws/bin/cfn-signal -e $? ",
-							"	--stack ", { "Ref" : "AWS::StackName" },
-							"	--resource IndexerInstance ",
-							"	--region ", { "Ref" : "AWS::Region" }, "\n"
+							"    --stack ", { "Ref" : "AWS::StackName" },
+							"    --resource IndexerInstance ",
+							"    --configsets install_and_run ",
+							"    --region ", { "Ref" : "AWS::Region" }, "\n"
 						]]
 					}
 				}
 			},
 			"Metadata" : {
+				"AWS::CloudFormation::Authentication" : {
+					"SourceBucket" : {
+						"type" : "s3",
+						"buckets" : [{ "Ref" : "IndexerSourceBucket" }],
+						"roleName" : { "Ref" : "DeployerRole" }
+					}
+				},
 				"AWS::CloudFormation::Init" : {
 					"configSets" : {
-						"install" : [
+						"install_and_run" : [
 							"configure_yum",
 							"install_mono",
-							"install_indexer"
+							"install_indexer",
+							"run_indexer"
 						]
 					},
 					"configure_yum" : {
@@ -160,10 +220,16 @@
 						"sources" : {
 							"/opt/indexer" : {
 								"Fn::Join" : ["", [
-									{ "Ref" : "IndexerSourceBucketBaseUrl" }, "/",
-									{ "Ref" : "IndexerVersion" }, "/source.zip"
+									{ "Ref" : "IndexerSourceBucket" },
+									{ "Ref" : "IndexerSourceBucketKeyPrefix" }, "/",
+									{ "Ref" : "IndexerVersion" }, "/src.zip"
 								]]
 							}
+						}
+					},
+					"run_indexer" : {
+						"commands" : {
+							"01_run" : "mono /opt/indexer/NancySelfHost.exe"
 						}
 					}
 				}

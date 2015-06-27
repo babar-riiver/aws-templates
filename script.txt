@@ -1,0 +1,12 @@
+<powershell>
+Start-Transcript -path C:\install-log.txt -append 
+cfn-init.exe -v -s %{StackId} -r WebServerLaunchConfiguration --region %{Region}
+"Removing Default Website..." | Write-Host 
+remove-website -name "Default Web Site" 
+while((Get-Website -Name "Default Web Site") -ne $null) { "Waiting for Default Website to be removed" | Write-Host; Start-Sleep -Seconds 5 } 
+"Creating Website..." | Write-Host 
+new-website -name Test -port 80 -physicalpath c:\inetpub\Test -ApplicationPool ".NET v4.5" -force 
+"Starting Website..." | Write-Host 
+start-website -name Test 
+cfn-signal.exe --stack %{StackId} --resource WebServerScalingGroup --region %{Region}
+</powershell>
